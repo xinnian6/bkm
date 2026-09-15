@@ -1,34 +1,10 @@
 {
-  "code": "吉利蛋",
-  "confidence": 5.0,
-  "sites": [
-    "https://love2.p6m6.com/",
-    "https://web1.52pokemon66.cc/",
-    "https://web1.52pokemon.cc/"
-  ],
-  "candidates": [
-    {
-      "word": "吉利蛋",
-      "score": 51.0
-    },
-    {
-      "word": "准时打卡前来",
-      "score": 4.0
-    },
-    {
-      "word": "感谢前排佬友",
-      "score": 4.0
-    },
-    {
-      "word": "新的一月已经",
-      "score": 4.0
-    },
-    {
-      "word": "已续上",
-      "score": 4.0
-    }
-  ],
-  "scanned_at": "2026-09-15T20:43:24",
-  "topic_id": 2841293,
-  "topic_title": "宝可梦机场之九月免费兑换码猜猜我是谁"
+  "code": null,
+  "confidence": 0,
+  "sites": [],
+  "candidates": [],
+  "scanned_at": "2026-09-15T12:52:56",
+  "topic_id": null,
+  "topic_title": null,
+  "error": "no_matching_topic"
 }
