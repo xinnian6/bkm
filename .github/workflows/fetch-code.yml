@@ -1,9 +1,10 @@
 name: Fetch Pokemon Airport Code
 
+# 注意:GitHub runner 的 IP 段被 linux.do 的 Cloudflare 硬拦,
+# headless Chrome 过不了 JSON 端点(实测反复 no_matching_topic)。
+# 所以定时跑改由本地 Windows 计划任务 auto_push.py 接管(本地 IP 放行)。
+# 这个 workflow 保留手动触发,方便偶尔在 runner 上试/对比。
 on:
-  schedule:
-    # 每周一 UTC 03:17 (北京周一 11:17),错开 :00/:30 整点高峰
-    - cron: '17 3 * * 1'
   workflow_dispatch: {}
 
 permissions:
@@ -45,11 +46,8 @@ jobs:
         env:
           CHROME_PATH: ${{ env.CHROME_PATH }}
         run: |
-          set +e
           python gh_actions_fetcher/fetch_code.py
-          code=$?
-          echo "exit_code=$code" >> $GITHUB_OUTPUT
-          exit 0
+          echo "fetch exit: $?"
 
       - name: Show result
         if: always()
@@ -61,8 +59,9 @@ jobs:
           cat latest.md || echo "(no md)"
 
       - name: Commit result
-        # 只有成功取到码 (exit 0) 才覆盖仓库里的 JSON;失败保留旧码
-        if: steps.run.outputs.exit_code == '0'
+        # 只有 fetch_code.py 写了 .fetch_success 标记(=拿到码)才覆盖远程 JSON
+        # 失败时绝不 commit,保留仓库里上次的成功码
+        if: hashFiles('.fetch_success') != ''
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"

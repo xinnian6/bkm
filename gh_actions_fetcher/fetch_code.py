@@ -40,6 +40,8 @@ OUTPUT_DIR = os.environ.get("OUTPUT_DIR", REPO_ROOT)
 JSON_OUT = os.path.join(OUTPUT_DIR, "current_code.json")
 MD_OUT = os.path.join(OUTPUT_DIR, "latest.md")
 NAMES_FILE = os.path.join(HERE, "pokemon_names.txt")
+# 成功标记文件:只有拿到码才写。commit 步骤/ auto_push 据此判断是否覆盖远程
+SUCCESS_FLAG = os.path.join(OUTPUT_DIR, ".fetch_success")
 
 # 标题关键词(找帖用)
 TITLE_KEYWORDS = ["宝可梦", "pokemon"]
@@ -93,44 +95,39 @@ POKEMON_NAMES = load_pokemon_names()
 
 
 def get_browser():
-    """起 headless Chrome,过 Cloudflare。Linux/GitHub Actions 友好。"""
+    """起 Chrome,过 Cloudflare。本地有头;CI/headless 用环境变量切换。"""
     options = ChromiumOptions()
     options.auto_port()
     options.set_timeouts(base=2)
     options.set_argument("--window-size=1280,900")
-    # headless + CI 必需参数
-    for arg in [
-        "--headless=new",
-        "--no-sandbox",
-        "--disable-gpu",
-        "--disable-dev-shm-usage",
-        "--lang=zh-CN",
-        "--disable-features=IsolateOrigins,site-per-process",
-    ]:
-        options.set_argument(arg)
-    options.set_user_agent(
-        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
-    )
-    # Linux 上若 runner 自带 chrome,DrissionPage 会自动探测;否则用自带的 chromium
-    log("启动 headless 浏览器(过 Cloudflare)...")
+    options.set_argument("--lang=zh-CN")
+    options.set_argument("--disable-features=IsolateOrigins,site-per-process")
+    # CI 环境用 headless;本地有头过 CF 更稳
+    if os.environ.get("CI") or os.environ.get("HEADLESS"):
+        for arg in ["--headless=new", "--no-sandbox", "--disable-gpu",
+                    "--disable-dev-shm-usage"]:
+            options.set_argument(arg)
+        options.set_user_agent(
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+        )
+    log("启动浏览器(过 Cloudflare)...")
     browser = Chromium(options)
     tab = browser.latest_tab
     tab.get(BASE)
-    log("等 CF 挑战通过(最多 90 秒)...")
-    for i in range(90):
+    log("等 CF 挑战通过(最多 60 秒)...")
+    for i in range(60):
         time.sleep(1)
         title = tab.title or ""
         tl = title.lower()
         if "linux.do" in tl or "linux do" in tl:
             log(f"CF 已通过({i+1}秒)")
             return browser, tab
-        # 有些时候 CF 放行后 title 还没渲染,URL 不再是 challenge 也算过
         url = tab.url or ""
         if "linux.do" in url and "just a moment" not in tl and "请稍候" not in title and title:
             log(f"CF 已通过({i+1}秒,URL 检测)")
             return browser, tab
-    log("[!] 90 秒未通过 CF 挑战(runner IP 可能被 CF 严拦)")
+    log("[!] 60 秒未通过 CF 挑战")
     return browser, tab
 
 
@@ -145,50 +142,30 @@ def _is_cf_challenge(html, title=""):
     return False
 
 
-def fetch_json(tab, url, timeout=90, retries=3):
-    """拉 Discourse JSON。
-    Discourse 把 JSON 包在 <pre> 里;但 .json 端点常被 CF 二次挑战拦。
-    策略:CF 一直不放行就刷新重 tab.get(url) 重试,放行后等 <pre> 渲染。
-    runner IP 段 CF 更严,给足时间。
-    """
-    for attempt in range(retries):
-        if attempt > 0:
-            log(f"  fetch_json 第 {attempt+1} 次重试: {url}")
-        tab.get(url)
-        start = time.time()
-        # 阶段1:等 CF 放行(最多 timeout 秒),放行不了就刷新重来
-        cf_deadline = start + timeout
-        passed = False
-        while time.time() < cf_deadline:
-            time.sleep(0.7)
-            html = tab.html or ""
-            title = tab.title or ""
-            if not _is_cf_challenge(html, title):
-                passed = True
+def fetch_json(tab, url, timeout=30):
+    """拉 Discourse JSON。等 CF 放行(标题非挑战页),再等 <pre> 或裸 JSON。"""
+    tab.get(url)
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        time.sleep(0.5)
+        html = tab.html or ""
+        title = tab.title or ""
+        if _is_cf_challenge(html, title):
+            continue  # 还在挑战页
+        # Discourse 通常把 JSON 包在 <pre> 里
+        m = re.search(r"<pre>(.*?)</pre>", html, re.S)
+        if m and len(m.group(1)) > 100:
+            try:
+                return json.loads(m.group(1))
+            except Exception:
                 break
-        if not passed:
-            continue  # 这次没过 CF,刷新重试
-        # 阶段2:放行后等 <pre> 渲染(再给 20 秒)
-        pre_deadline = time.time() + 20
-        while time.time() < pre_deadline:
-            time.sleep(0.5)
-            html = tab.html or ""
-            title = tab.title or ""
-            if _is_cf_challenge(html, title):
-                continue
-            m = re.search(r"<pre>(.*?)</pre>", html, re.S)
-            if m and len(m.group(1)) > 100:
-                try:
-                    return json.loads(m.group(1))
-                except Exception:
-                    break
-            # 有的 Discourse 不包 pre,直接是裸 JSON 文本
-            stripped = (html or "").strip()
-            if stripped.startswith("{") and "topic_list" in stripped:
-                try:
-                    return json.loads(stripped)
-                except Exception:
-                    pass
+        # 兜底:裸 JSON 文本(application/json 直接渲染成 body)
+        stripped = html.strip()
+        if stripped.startswith("{") and "topic_list" in stripped:
+            try:
+                return json.loads(stripped)
+            except Exception:
+                pass
     return None
 
 
@@ -397,6 +374,11 @@ def write_result(code, confidence, sites, candidates, topic_id, topic_title, err
 def main():
     log(f"工作目录: {REPO_ROOT}")
     log(f"名表: {NAMES_FILE} ({len(POKEMON_NAMES)} 个宝可梦名)")
+    # 清旧的成功标记(本次跑之前默认失败态)
+    try:
+        os.remove(SUCCESS_FLAG)
+    except OSError:
+        pass
 
     browser, tab = get_browser()
     code = None
@@ -452,8 +434,12 @@ def main():
             pass
 
     write_result(code, confidence, sites, candidates, topic_id, topic_title, error)
-    # 失败退出码:GitHub Actions 步骤里可据 commit 步骤判断是否覆盖
+    # 成功才写标记文件(commit 步骤 / auto_push 据此判断是否覆盖远程)
     if code:
+        try:
+            open(SUCCESS_FLAG, "w").write(code)
+        except Exception:
+            pass
         print("\nRESULT_CODE:", code)
         print("RESULT_SITES:", sites)
         sys.exit(0)
