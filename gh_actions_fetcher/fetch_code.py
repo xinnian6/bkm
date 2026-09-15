@@ -117,8 +117,8 @@ def get_browser():
     browser = Chromium(options)
     tab = browser.latest_tab
     tab.get(BASE)
-    log("等 CF 挑战通过(最多 60 秒)...")
-    for i in range(60):
+    log("等 CF 挑战通过(最多 90 秒)...")
+    for i in range(90):
         time.sleep(1)
         title = tab.title or ""
         tl = title.lower()
@@ -127,10 +127,10 @@ def get_browser():
             return browser, tab
         # 有些时候 CF 放行后 title 还没渲染,URL 不再是 challenge 也算过
         url = tab.url or ""
-        if "linux.do" in url and "just a moment" not in tl and title:
+        if "linux.do" in url and "just a moment" not in tl and "请稍候" not in title and title:
             log(f"CF 已通过({i+1}秒,URL 检测)")
             return browser, tab
-    log("[!] 60 秒未通过 CF 挑战")
+    log("[!] 90 秒未通过 CF 挑战(runner IP 可能被 CF 严拦)")
     return browser, tab
 
 
@@ -145,56 +145,96 @@ def _is_cf_challenge(html, title=""):
     return False
 
 
-def fetch_json(tab, url, timeout=40):
+def fetch_json(tab, url, timeout=90, retries=3):
     """拉 Discourse JSON。
-    Discourse 把 JSON 包在 <pre> 里;但 .json 端点常被 CF 二次挑战拦,
-    先等 CF 放行(标题不再是 请稍候/just a moment),再等 <pre> 出现。
-    CF 放行有随机性,给足时间。
+    Discourse 把 JSON 包在 <pre> 里;但 .json 端点常被 CF 二次挑战拦。
+    策略:CF 一直不放行就刷新重 tab.get(url) 重试,放行后等 <pre> 渲染。
+    runner IP 段 CF 更严,给足时间。
     """
-    tab.get(url)
-    start = time.time()
-    # 阶段1:等 CF 挑战放行(最多 timeout 秒)
-    cf_deadline = start + timeout
-    while time.time() < cf_deadline:
-        time.sleep(0.5)
-        html = tab.html or ""
-        title = tab.title or ""
-        if not _is_cf_challenge(html, title):
-            break
-    # 阶段2:放行后等 <pre> 渲染(再给 15 秒)
-    pre_deadline = time.time() + 15
-    while time.time() < pre_deadline:
-        time.sleep(0.5)
-        html = tab.html or ""
-        title = tab.title or ""
-        if _is_cf_challenge(html, title):
-            # 放行后又触发挑战,继续等
-            continue
-        m = re.search(r"<pre>(.*?)</pre>", html, re.S)
-        if m and len(m.group(1)) > 100:
-            try:
-                return json.loads(m.group(1))
-            except Exception:
+    for attempt in range(retries):
+        if attempt > 0:
+            log(f"  fetch_json 第 {attempt+1} 次重试: {url}")
+        tab.get(url)
+        start = time.time()
+        # 阶段1:等 CF 放行(最多 timeout 秒),放行不了就刷新重来
+        cf_deadline = start + timeout
+        passed = False
+        while time.time() < cf_deadline:
+            time.sleep(0.7)
+            html = tab.html or ""
+            title = tab.title or ""
+            if not _is_cf_challenge(html, title):
+                passed = True
                 break
+        if not passed:
+            continue  # 这次没过 CF,刷新重试
+        # 阶段2:放行后等 <pre> 渲染(再给 20 秒)
+        pre_deadline = time.time() + 20
+        while time.time() < pre_deadline:
+            time.sleep(0.5)
+            html = tab.html or ""
+            title = tab.title or ""
+            if _is_cf_challenge(html, title):
+                continue
+            m = re.search(r"<pre>(.*?)</pre>", html, re.S)
+            if m and len(m.group(1)) > 100:
+                try:
+                    return json.loads(m.group(1))
+                except Exception:
+                    break
+            # 有的 Discourse 不包 pre,直接是裸 JSON 文本
+            stripped = (html or "").strip()
+            if stripped.startswith("{") and "topic_list" in stripped:
+                try:
+                    return json.loads(stripped)
+                except Exception:
+                    pass
     return None
 
 
 def find_pokemon_topics(tab):
-    """从标签页找标题含宝可梦+兑换码的帖子,返回 [(topic_id, title)],最新在前。"""
-    data = fetch_json(tab, f"{TAG_URL}.json")
-    if not data:
-        log("标签页 JSON 拉取失败(可能 CF 没过)")
-        return []
-    topics = data.get("topic_list", {}).get("topics", [])
+    """找标题含宝可梦+兑换码的帖子,返回 [(topic_id, title)],最新在前。
+    主路:标签页 tag/193-tag/193.json;兜底:search.json 搜关键词。
+    """
     matched = []
-    for t in topics:
-        title = t.get("title", "")
-        has_pokemon = any(k in title for k in TITLE_KEYWORDS) or \
-                      any(k in title.lower() for k in TITLE_KEYWORDS)
-        has_code = any(k in title for k in CODE_KEYWORDS)
-        if has_pokemon and has_code:
-            matched.append((t.get("id"), title))
-    log(f"标签页找到 {len(matched)} 个匹配帖子")
+    # 主路:标签页
+    data = fetch_json(tab, f"{TAG_URL}.json")
+    if data:
+        topics = data.get("topic_list", {}).get("topics", [])
+        for t in topics:
+            title = t.get("title", "")
+            has_pokemon = any(k in title for k in TITLE_KEYWORDS) or \
+                          any(k in title.lower() for k in TITLE_KEYWORDS)
+            has_code = any(k in title for k in CODE_KEYWORDS)
+            if has_pokemon and has_code:
+                matched.append((t.get("id"), title))
+        log(f"标签页找到 {len(matched)} 个匹配帖子")
+    else:
+        log("标签页 JSON 拉取失败(可能 CF 没过),转搜索兜底")
+
+    # 去重用
+    seen = {tid for tid, _ in matched}
+
+    # 兜底:search.json
+    if not matched:
+        import urllib.parse as up
+        q = up.quote("宝可梦 兑换码")
+        sdata = fetch_json(tab, f"{BASE}/search.json?q={q}")
+        topics2 = []
+        if isinstance(sdata, dict):
+            topics2 = sdata.get("topics", []) or []
+        if topics2:
+            log(f"搜索找到 {len(topics2)} 个候选")
+            for t in topics2:
+                title = t.get("title", "") or t.get("title_html", "") or ""
+                tid = t.get("id")
+                has_pokemon = any(k in title for k in TITLE_KEYWORDS) or \
+                              any(k in title.lower() for k in TITLE_KEYWORDS)
+                has_code = any(k in title for k in CODE_KEYWORDS)
+                if has_pokemon and has_code and tid and tid not in seen:
+                    seen.add(tid)
+                    matched.append((tid, title))
+
     for tid, title in matched[:5]:
         log(f"  - {title} (id={tid})")
     return matched
