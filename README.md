@@ -16,7 +16,7 @@ GitHub Actions 定时从 [linux.do](https://linux.do) 福利羊毛板块抓取�
 
 - `current_code.json` — 稳定 JSON,Worker 可从 raw 拉:
   ```
-  https://raw.githubusercontent.com/xinnian16/baokemeng/main/current_code.json
+  https://raw.githubusercontent.com/xinnian6/bkm/main/current_code.json
   ```
   字段:`code` / `confidence` / `sites` / `candidates` / `scanned_at` / `topic_id` / `topic_title` / `error`(失败时)
 
