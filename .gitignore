@@ -1,0 +1,18 @@
+# 只跟踪 GitHub Actions 抓取器相关文件,其余本地项目一律忽略
+# (本目录是本地工作台,含 accounts.txt / token / CE表 等敏感文件,绝不入库)
+
+# 先忽略一切
+/*
+/*/
+
+# 放行抓取器目录及其内容
+!/.github
+!/.github/**
+!/gh_actions_fetcher
+!/gh_actions_fetcher/**
+
+# 放行输出与文档
+!/current_code.json
+!/latest.md
+!/README.md
+!/.gitignore

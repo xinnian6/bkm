@@ -1,0 +1,75 @@
+name: Fetch Pokemon Airport Code
+
+on:
+  schedule:
+    # 每周一 UTC 03:17 (北京周一 11:17),错开 :00/:30 整点高峰
+    - cron: '17 3 * * 1'
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+concurrency:
+  group: fetch-code
+  cancel-in-progress: false
+
+jobs:
+  fetch:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Chrome
+        run: |
+          # ubuntu-22.04 runner 自带 google-chrome-stable;没有就装
+          if ! command -v google-chrome >/dev/null 2>&1; then
+            wget -q -O /tmp/chrome.deb https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
+            sudo apt-get install -y /tmp/chrome.deb || sudo apt --fix-broken install -y
+          fi
+          echo "CHROME_PATH=$(command -v google-chrome || command -v chromium)" >> $GITHUB_ENV
+
+      - name: Install Python deps
+        run: |
+          pip install -r gh_actions_fetcher/requirements.txt
+
+      - name: Run fetcher
+        id: run
+        continue-on-error: true
+        env:
+          CHROME_PATH: ${{ env.CHROME_PATH }}
+        run: |
+          set +e
+          python gh_actions_fetcher/fetch_code.py
+          code=$?
+          echo "exit_code=$code" >> $GITHUB_OUTPUT
+          exit 0
+
+      - name: Show result
+        if: always()
+        run: |
+          echo "=== current_code.json ==="
+          cat current_code.json || echo "(no json)"
+          echo ""
+          echo "=== latest.md ==="
+          cat latest.md || echo "(no md)"
+
+      - name: Commit result
+        # 只有成功取到码 (exit 0) 才覆盖仓库里的 JSON;失败保留旧码
+        if: steps.run.outputs.exit_code == '0'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add current_code.json latest.md
+          if git diff --cached --quiet; then
+            echo "无变化,跳过 commit"
+          else
+            git commit -m "chore: update pokemon airport code ($(date -u +%Y-%m-%dT%H:%M:%SZ))"
+            git push
+          fi

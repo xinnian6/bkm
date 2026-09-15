@@ -1,0 +1,3 @@
+# 宝可梦机场优惠码抓取器依赖
+# DrissionPage 会自动拉取所需底层依赖,无需另列
+DrissionPage>=4.1,<5
